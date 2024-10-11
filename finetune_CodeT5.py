@@ -164,43 +164,6 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
 
 
-def sliding_window_batch_inference_t(model, tokenizer, input_ids, attention_mask, max_length=512, overlap=450):
-    batch_predictions = []
-    for i in range(len(input_ids)):
-        tokens = input_ids[i].tolist()
-        token_len = len([t for t in tokens if t != tokenizer.pad_token_id])  # Exclude padding tokens
-        # If token length is less than max_length, directly generate the prediction
-        if token_len <= max_length:
-            with torch.no_grad():
-                pred = model.generate(input_ids=input_ids[i].unsqueeze(0),
-                                      attention_mask=attention_mask[i].unsqueeze(0), max_length=128)
-            text = tokenizer.decode(pred[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
-            batch_predictions.append(text)
-            continue
-        # Otherwise, split into sliding windows and perform inference on each
-        window_predictions = []
-        for start in range(0, token_len, max_length - overlap):
-            if start + max_length > token_len:
-                end = token_len
-                start = token_len - max_length
-            else:
-                end = start + max_length
-            window_input_ids = input_ids[i][start:end].unsqueeze(0).to(input_ids.device)
-            window_attention_mask = torch.ones_like(window_input_ids).to(
-                input_ids.device)  # Assuming no padding within the window
-            with torch.no_grad():
-                pred = model.generate(input_ids=window_input_ids, attention_mask=window_attention_mask, max_length=128)
-            text = tokenizer.decode(pred[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
-            window_predictions.append(text)
-
-        numeric_predictions = [1 if 'true' in pred else 0 for pred in window_predictions]
-        final_prediction1 = sum(numeric_predictions) / len(numeric_predictions) >= 0.1
-        final_prediction1 = 'true' if final_prediction1 else 'false'
-        batch_predictions.append(final_prediction1)
-
-    return batch_predictions
-
-
 def sliding_window_batch_inference(model, tokenizer, input_ids, attention_mask, max_length=512, overlap=50):
     batch_predictions = [[] for _ in range(10)]
     for i in range(len(input_ids)):
@@ -240,7 +203,7 @@ def sliding_window_batch_inference(model, tokenizer, input_ids, attention_mask, 
     return batch_predictions
 
 
-def main(loc):
+def main():
     parser = argparse.ArgumentParser()
 
     ## Required parameters
@@ -588,13 +551,12 @@ def main(loc):
 
     if args.do_test:
         print("ho")
-        args.output_dir=loc
         model.load_state_dict(torch.load(f"./{args.output_dir}/checkpoint-best-acc/pytorch_model.bin"))
         files = []
-        overlap1 = [50,100,150,200,250,300,350,400,450,500]
+        overlap1 = [50,100,150,200,250,300,350,400,450]
         # if args.dev_filename is not None:
         if args.test_filename is not None:
-            for i in range(10):
+            for i in range(len(overlap1)):
                 files.append(args.test_filename)
         for idx, file in enumerate(files):
             logger.info("Test file: {}".format(file))
@@ -639,8 +601,4 @@ def main(loc):
 
 
 if __name__ == "__main__":
-    main("small1")
-    main("small2")
-    main("small3")
-    main("small4")
-    main("small5")
+    main()
