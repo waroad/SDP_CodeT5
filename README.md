@@ -1,11 +1,12 @@
-# Enhancing Software Defect Prediction Using a Sliding Window Approach with CodeT5
+# Enhancing Software Defect Prediction Using a Sliding Window Approach with Pretrained Language Models (PLMs)
 
 
-To fine tune a CodeBERT, just
+To fine tune CodeBERT and apply sliding window in inference stage, just
 ```bash
-python finetune_CodeBERT.py
+python finetune_CodeBERT_slide.py --output_dir=./bert1 --model_type roberta --model_name_or_path=microsoft/codebert-base --tokenizer_name=microsoft/codebert-base 
+
 ```
-To fine tune and apply sliding window in inference stage, just
+To fine tune CodeT5 and apply sliding window in inference stage, just
 ```bash
 python finetune_CodeT5.py --visible_gpu <GPU> --output_dir=./base1
 ```
