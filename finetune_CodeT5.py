@@ -152,6 +152,7 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
                 target_mask,
             )
         )
+    args.max_source_length = 512
     return features
 
 
@@ -165,7 +166,7 @@ def set_seed(seed=42):
 
 
 def sliding_window_batch_inference(model, tokenizer, input_ids, attention_mask, max_length=512, overlap=50):
-    batch_predictions = [[] for _ in range(10)]
+    batch_predictions = [[] for _ in range(20)]
     for i in range(len(input_ids)):
         tokens = input_ids[i].tolist()
         token_len = len([t for t in tokens if t != tokenizer.pad_token_id])  # Exclude padding tokens
@@ -262,7 +263,7 @@ def main():
                         help="Epsilon for Adam optimizer.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float,
                         help="Max gradient norm.")
-    parser.add_argument("--num_train_epochs", default=20, type=int,
+    parser.add_argument("--num_train_epochs", default=10, type=int,
                         help="Total number of training epochs to perform.")
     parser.add_argument("--max_steps", default=-1, type=int,
                         help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
@@ -307,9 +308,9 @@ def main():
     if os.path.exists(args.output_dir) is False:
         os.makedirs(args.output_dir)
 
-    model_config = T5Config.from_pretrained("Salesforce/codet5-small")
-    model = T5ForConditionalGeneration.from_pretrained("Salesforce/codet5-small", config=model_config)
-    tokenizer = RobertaTokenizer.from_pretrained("Salesforce/codet5-small")
+    model_config = T5Config.from_pretrained("Salesforce/codet5-base")
+    model = T5ForConditionalGeneration.from_pretrained("Salesforce/codet5-base", config=model_config)
+    tokenizer = RobertaTokenizer.from_pretrained("Salesforce/codet5-base")
 
     if args.load_model_path is not None:
         logger.info("reload model from {}".format(args.load_model_path))
@@ -492,112 +493,128 @@ def main():
                 else:
                     eval_examples = read_examples(args.dev_filename)
                     eval_examples = random.sample(eval_examples, min(1000, len(eval_examples)))
-                    eval_features = convert_examples_to_features(eval_examples, tokenizer, args, stage='test')
+                    eval_features = convert_examples_to_features(eval_examples, tokenizer, args, stage='original')
                     all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
                     all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)
                     eval_data = TensorDataset(all_source_ids, all_source_mask)
                     dev_dataset['dev_bleu'] = eval_examples, eval_data
 
-                    # Calculate bleu
-                    if 'dev_bleu' in dev_dataset:
-                        eval_examples, eval_data = dev_dataset['dev_bleu']
-                    else:
-                        eval_examples = read_examples(args.dev_filename)
-                        eval_examples = random.sample(eval_examples, min(1000, len(eval_examples)))
-                        eval_features = convert_examples_to_features(eval_examples, tokenizer, args, stage='test')
-                        all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
-                        all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)
-                        eval_data = TensorDataset(all_source_ids, all_source_mask)
-                        dev_dataset['dev_bleu'] = eval_examples, eval_data
 
-                    eval_sampler = SequentialSampler(eval_data)
-                    eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+                eval_sampler = SequentialSampler(eval_data)
+                eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
-                    model.eval()
-                    p = []
-                    for batch in eval_dataloader:
-                        batch = tuple(t.to(device) for t in batch)
-                        source_ids, source_mask = batch
-                        with torch.no_grad():
-                            preds = model.generate(input_ids=source_ids, attention_mask=source_mask, max_length=128)
+                model.eval()
+                p = []
+                for batch in eval_dataloader:
+                    batch = tuple(t.to(device) for t in batch)
+                    source_ids, source_mask = batch
+                    with torch.no_grad():
+                        preds = model.generate(input_ids=source_ids, attention_mask=source_mask, max_length=128)
+                        for pred in preds:
+                            text = tokenizer.decode(pred, skip_special_tokens=True,
+                                                    clean_up_tokenization_spaces=False)
+                            p.append(text)
 
-                            for pred in preds:
-                                text = tokenizer.decode(pred, skip_special_tokens=True,
-                                                        clean_up_tokenization_spaces=False)
-                                p.append(text)
-
-                    model.train()
-                    predictions = []
-                    sum1 = 0
-                    with open(os.path.join(args.output_dir, "dev.output"), 'w') as f, open(
-                            os.path.join(args.output_dir, "dev.gold"), 'w') as f1:
-                        for ref, gold in zip(p, eval_examples):
-                            predictions.append(str(gold.idx) + '\t' + ref)
-                            f.write(str(gold.idx) + '\t' + ref + '\n')
-                            f1.write(str(gold.idx) + '\t' + gold.target + '\n')
-                            if ref == gold.target:
-                                sum1 += 1
-                    logger.info("Epoch {}, the accuracy is {}".format(epoch, sum1 / len(eval_examples)))
-
-                    if sum1 / len(eval_examples) > best_acc:
-                        best_acc = sum1 / len(eval_examples)
-                        output_dir = os.path.join(args.output_dir, 'checkpoint-best-acc')
-                        if not os.path.exists(output_dir):
-                            os.makedirs(output_dir)
-                        model_to_save = model.module if hasattr(model,
-                                                                'module') else model  # Only save the model it-self
-                        output_model_file = os.path.join(output_dir, "pytorch_model.bin")
-                        torch.save(model_to_save.state_dict(), output_model_file)
-
-    if args.do_test:
-        print("ho")
-        model.load_state_dict(torch.load(f"./{args.output_dir}/checkpoint-best-acc/pytorch_model.bin"))
-        files = []
-        overlap1 = [50,100,150,200,250,300,350,400,450]
-        # if args.dev_filename is not None:
-        if args.test_filename is not None:
-            for i in range(len(overlap1)):
-                files.append(args.test_filename)
-        for idx, file in enumerate(files):
-            logger.info("Test file: {}".format(file))
-            eval_examples = read_examples(file)
-            eval_features = convert_examples_to_features(eval_examples, tokenizer, args, stage='test')
-            all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
-            all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)
-            eval_data = TensorDataset(all_source_ids, all_source_mask)
-
-            # Calculate bleu
-            eval_sampler = SequentialSampler(eval_data)
-            eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
-
-            model.eval()
-            ps = [[] for _ in range(10)]
-            for batch in tqdm(eval_dataloader, total=len(eval_dataloader)):
-                batch = tuple(t.to(device) for t in batch)
-                source_ids, source_mask = batch
-                batch_predictions = sliding_window_batch_inference(model, tokenizer, source_ids, source_mask,
-                                                                   overlap=overlap1[idx])
-                # Collect the predictions
-                for ind, p in enumerate(ps):
-                    p.extend(batch_predictions[ind])
-
-            model.train()
-            predictions = []
-            sum1 = 0
-            for ind, p in enumerate(ps):
-                with open(os.path.join(args.output_dir,
-                                       "{}_{}_thresh_O{}.output".format(args.test_filename[:-6], str(overlap1[idx]),
-                                                                       str(round(ind * 0.05, 2)))), 'w') as f, open(
-                        os.path.join(args.output_dir,
-                                     "{}_{}_thresh_O{}.gold".format(args.test_filename[:-6], str(overlap1[idx]),
-                                                                   str(round(ind * 0.05, 2)))), 'w') as f1:
+                model.train()
+                predictions = []
+                sum1 = 0
+                with open(os.path.join(args.output_dir, "dev.output"), 'w') as f, open(
+                        os.path.join(args.output_dir, "dev.gold"), 'w') as f1:
                     for ref, gold in zip(p, eval_examples):
                         predictions.append(str(gold.idx) + '\t' + ref)
                         f.write(str(gold.idx) + '\t' + ref + '\n')
                         f1.write(str(gold.idx) + '\t' + gold.target + '\n')
                         if ref == gold.target:
                             sum1 += 1
-    # logger.info("Epoch {}, the accuracy is {}".format(epoch, sum1/len(eval_examples)))
+                logger.info("Epoch {}, the accuracy is {}".format(epoch, sum1 / len(eval_examples)))
+
+                if sum1 / len(eval_examples) > best_acc:
+                    best_acc = sum1 / len(eval_examples)
+                    output_dir = os.path.join(args.output_dir, 'checkpoint-best-acc')
+                    if not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    model_to_save = model.module if hasattr(model,
+                                                            'module') else model  # Only save the model it-self
+                    output_model_file = os.path.join(output_dir, "pytorch_model.bin")
+                    torch.save(model_to_save.state_dict(), output_model_file)
+
+    if args.do_test:
+        print("ho")
+        model.load_state_dict(torch.load(f"./{args.output_dir}/checkpoint-best-acc/pytorch_model.bin"))
+        files = []
+        overlap1 = [-1, 0,50,100,150,200,250,300,350,400,450]
+        # if args.dev_filename is not None:
+        if args.test_filename is not None:
+            for i in range(len(overlap1)):
+                files.append(args.test_filename)
+        for idx, file in enumerate(files):
+            if idx==0:
+                logger.info("Test original, file: {}".format(file))
+
+                eval_examples = read_examples(file)
+                eval_features = convert_examples_to_features(eval_examples, tokenizer, args, stage='original')
+                all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
+                all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)
+                eval_data = TensorDataset(all_source_ids, all_source_mask)
+
+                # Calculate bleu
+                eval_sampler = SequentialSampler(eval_data)
+                eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+
+                model.eval()
+                p = []
+                for batch in tqdm(eval_dataloader, total=len(eval_dataloader)):
+                    batch = tuple(t.to(device) for t in batch)
+                    source_ids, source_mask = batch
+                    with torch.no_grad():
+                        preds = model.generate(input_ids=source_ids, attention_mask=source_mask, max_length=128)
+                        for pred in preds:
+                            text = tokenizer.decode(pred, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                            p.append(text)
+
+
+                with open(os.path.join(args.output_dir, "{}.output".format(args.test_filename[:-6])),
+                          'w') as f, open(
+                    os.path.join(args.output_dir, "{}.gold".format(args.test_filename[:-6])), 'w') as f1:
+                    for ref, gold in zip(p, eval_examples):
+                        f.write(str(gold.idx) + '\t' + ref + '\n')
+                        f1.write(str(gold.idx) + '\t' + gold.target + '\n')
+
+            else:
+                logger.info("Test sliding, file: {}".format(file))
+
+                eval_examples = read_examples(file)
+                eval_features = convert_examples_to_features(eval_examples, tokenizer, args, stage='test')
+                all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
+                all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)
+                eval_data = TensorDataset(all_source_ids, all_source_mask)
+
+                # Calculate bleu
+                eval_sampler = SequentialSampler(eval_data)
+                eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+
+                ps = [[] for _ in range(20)]
+                for batch in tqdm(eval_dataloader, total=len(eval_dataloader)):
+                    batch = tuple(t.to(device) for t in batch)
+                    source_ids, source_mask = batch
+                    batch_predictions = sliding_window_batch_inference(model, tokenizer, source_ids, source_mask,
+                                                                       overlap=overlap1[idx])
+                    # Collect the predictions
+                    for ind, p in enumerate(ps):
+                        p.extend(batch_predictions[ind])
+
+                model.train()
+                for ind, p in enumerate(ps):
+                    with open(os.path.join(args.output_dir,
+                                           "{}_{}_thresh_{}.output".format(args.test_filename[:-6], str(overlap1[idx]),
+                                                                           str(round(ind * 0.05, 2)))), 'w') as f, open(
+                            os.path.join(args.output_dir,
+                                         "{}_{}_thresh_{}.gold".format(args.test_filename[:-6], str(overlap1[idx]),
+                                                                       str(round(ind * 0.05, 2)))), 'w') as f1:
+                        for ref, gold in zip(p, eval_examples):
+                            f.write(str(gold.idx) + '\t' + ref + '\n')
+                            f1.write(str(gold.idx) + '\t' + gold.target + '\n')
+
 
 
 if __name__ == "__main__":
